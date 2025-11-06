@@ -1,0 +1,93 @@
+openapi: 3.0.3
+info:
+  title: Appointment Service API
+  version: 0.1.0
+  description: API for creating and querying appointments.
+servers:
+  - url: http://localhost:3000/
+  - url: https://awonc856dk.execute-api.us-east-1.amazonaws.com/
+paths:
+  /appointments:
+    post:
+      summary: Register an appointment
+      operationId: createAppointment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentRequest'
+            examples:
+              sample:
+                value:
+                  insuredId: "01234"
+                  scheduleId: 1001
+                  countryISO: "PE"
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptedResponse'
+        '400':
+          description: Validation error
+  /appointments/{insuredId}:
+    get:
+      summary: Get appointments by insuredId
+      operationId: getAppointmentsByInsuredId
+      parameters:
+        - in: path
+          name: insuredId
+          required: true
+          schema:
+            type: string
+            pattern: "^\\d{5}$"
+      responses:
+        '200':
+          description: Items found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AppointmentItem'
+components:
+  schemas:
+    AppointmentRequest:
+      type: object
+      required: [insuredId, scheduleId, countryISO]
+      properties:
+        insuredId:
+          type: string
+          description: 5-digit code, may include leading zeros
+          pattern: "^\\d{5}$"
+        scheduleId:
+          type: integer
+          format: int64
+        countryISO:
+          type: string
+          description: Country ISO code (e.g., PE, CL)
+          example: PE
+    AppointmentItem:
+      allOf:
+        - $ref: '#/components/schemas/AppointmentRequest'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [pending, completed]
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+    AcceptedResponse:
+      type: object
+      properties:
+        message:
+          type: string

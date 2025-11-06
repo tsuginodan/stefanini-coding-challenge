@@ -1,0 +1,240 @@
+# "org" ensures this Service is used with the correct Serverless Framework License Key.
+org: dalvarezdev
+service: stefanini-rimac-challenge
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  memorySize: 256
+  timeout: 20
+  httpApi:
+    name: AppointmentsApiGtw
+  environment:
+    REGION: us-east-1
+    APPOINTMENTS_TABLE: { Ref: AppointmentsTable }
+    TOPIC_ARN: { Ref: AppointmentTopic }
+    STATUS_QUEUE_ARN: { "Fn::GetAtt": [ StatusQueue, Arn ] }
+    STATUS_QUEUE_URL: { Ref: StatusQueue }
+  tags:
+    Stage: ${self:provider.stage}
+
+plugins:
+  - serverless-api-gateway-throttling
+  - serverless-offline
+
+custom:
+  apiGatewayThrottling:
+    maxRequestsPerSecond: 10
+    maxConcurrentRequests: 5
+
+build:
+  esbuild:
+    bundle: true
+    minify: true
+    sourcemap: true
+    target: node20
+    platform: node
+    buildConcurrency: 10
+
+functions:
+  appointment:
+    handler: src/handlers/appointment.handler
+    events:
+      - httpApi:
+          method: post
+          path: /appointments
+      - httpApi:
+          method: get
+          path: /appointments/{insuredId}
+      - sqs:
+          arn: { "Fn::GetAtt": [ StatusQueue, Arn ] }
+          batchSize: 5
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          - dynamodb:Query
+          - dynamodb:GetItem
+        Resource:
+          - { "Fn::GetAtt": [ AppointmentsTable, Arn ] }
+          - { "Fn::Join": [ "/", [ { "Fn::GetAtt": [ AppointmentsTable, Arn ] }, "index/insuredId-index" ] ] }
+      - Effect: Allow
+        Action:
+          - sns:Publish
+        Resource:
+          - { Ref: AppointmentTopic }
+      - Effect: Allow
+        Action:
+          - sqs:ReceiveMessage
+          - sqs:DeleteMessage
+          - sqs:ChangeMessageVisibility
+          - sqs:GetQueueAttributes
+        Resource:
+          - { "Fn::GetAtt": [ StatusQueue, Arn ] }
+      - Effect: Allow
+        Action:
+          - events:PutEvents
+        Resource: "*"
+
+  appointment_pe:
+    handler: src/handlers/appointmentPe.handler
+    events:
+      - sqs:
+          arn: { "Fn::GetAtt": [ SQSPe, Arn ] }
+          batchSize: 10
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - sqs:ReceiveMessage
+          - sqs:DeleteMessage
+          - sqs:ChangeMessageVisibility
+          - sqs:GetQueueAttributes
+        Resource:
+          - { "Fn::GetAtt": [ SQSPe, Arn ] }
+      - Effect: Allow
+        Action:
+          - events:PutEvents
+        Resource: "*"
+
+  appointment_cl:
+    handler: src/handlers/appointmentCl.handler
+    events:
+      - sqs:
+          arn: { "Fn::GetAtt": [ SQSCl, Arn ] }
+          batchSize: 10
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - sqs:ReceiveMessage
+          - sqs:DeleteMessage
+          - sqs:ChangeMessageVisibility
+          - sqs:GetQueueAttributes
+        Resource:
+          - { "Fn::GetAtt": [ SQSCl, Arn ] }
+      - Effect: Allow
+        Action:
+          - events:PutEvents
+        Resource: "*"
+
+resources:
+  Resources:
+    AppointmentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: Appointments
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+          - AttributeName: insuredId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: insuredId-index
+            KeySchema:
+              - AttributeName: insuredId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    SQSPe:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: SQS_PE
+    SQSCl:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: SQS_CL
+
+    StatusQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: SQS_STATUS
+
+    AppointmentTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: AppointmentsTopic
+
+    SnsSubTopicToSQSPe:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: { Ref: AppointmentTopic }
+        Protocol: sqs
+        Endpoint: { "Fn::GetAtt": [ SQSPe, Arn ] }
+        RawMessageDelivery: true
+        FilterPolicy:
+          countryISO:
+            - PE
+    SnsSubTopicToSQSCl:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn: { Ref: AppointmentTopic }
+        Protocol: sqs
+        Endpoint: { "Fn::GetAtt": [ SQSCl, Arn ] }
+        RawMessageDelivery: true
+        FilterPolicy:
+          countryISO:
+            - CL
+
+    SQSPePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - { Ref: SQSPe }
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: sns.amazonaws.com }
+              Action: "sqs:SendMessage"
+              Resource: { "Fn::GetAtt": [ SQSPe, Arn ] }
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: { Ref: AppointmentTopic }
+    SQSClPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - { Ref: SQSCl }
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: sns.amazonaws.com }
+              Action: "sqs:SendMessage"
+              Resource: { "Fn::GetAtt": [ SQSCl, Arn ] }
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: { Ref: AppointmentTopic }
+
+    AppointmentsStatusEventRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name: AppointmentsStatusEventRule
+        EventPattern:
+          source:
+            - appointment
+          detail-type:
+            - AppointmentProcessed
+        Targets:
+          - Arn: { "Fn::GetAtt": [ StatusQueue, Arn ] }
+            Id: StatusQueueTarget
+
+    StatusQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - { Ref: StatusQueue }
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: { Service: events.amazonaws.com }
+              Action: "sqs:SendMessage"
+              Resource: { "Fn::GetAtt": [ StatusQueue, Arn ] }
