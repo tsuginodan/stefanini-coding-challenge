@@ -3,6 +3,7 @@ import type {SQSBatchItemFailure, SQSHandler} from 'aws-lambda';
 import * as EBModule from '../adapters/AWSEventBridgeEmitter';
 import {AWSRdsMySqlRepository} from '../adapters/AWSRdsMySqlRepository';
 import type {AppointmentRequest, CountryISO} from 'index';
+import Logger from '../config/winston';
 
 /**
  * Shared business logic for per-country lambda handlers
@@ -18,12 +19,18 @@ export function buildCountryAppointmentHandler(countryISO: CountryISO): SQSHandl
     });
 
     return async (event) => {
+        Logger.info(`[${countryISO}] Received ${event.Records.length} records`);
+
         const failures: SQSBatchItemFailure[] = [];
         for (const record of event.Records) {
             try {
                 const payload = JSON.parse(record.body) as unknown;
                 const validated = sqsMessageSchema.validate(payload);
-                if (validated.error) throw new Error('Message received is not valid');
+                if (validated.error) {
+                    Logger.error(`[${countryISO}] Invalid message received: ${JSON.stringify(payload)}`);
+                    failures.push({itemIdentifier: record.messageId});
+                    continue;
+                }
                 const appointmentRequest: AppointmentRequest = validated.value;
 
                 await awsRDSMySql.storeAppointment(appointmentRequest);
@@ -34,7 +41,7 @@ export function buildCountryAppointmentHandler(countryISO: CountryISO): SQSHandl
                     countryISO: appointmentRequest.countryISO,
                 });
             } catch (err) {
-                console.error(`[${countryISO}] Failed to process record`, err);
+                Logger.error(`[${countryISO}] Failed to process record`, err);
                 failures.push({itemIdentifier: record.messageId});
             }
         }
