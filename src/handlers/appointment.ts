@@ -3,6 +3,8 @@ import Joi from 'joi';
 import {AWSDynamoDBRepository} from '../adapters/AWSDynamoDBRepository';
 import {AWSSNSPublisher} from '../adapters/AWSSNSPublisher';
 import type {AppointmentProcessedEventMessage, AppointmentRecord, CountryISO,} from 'index';
+import {AppointmentRequest} from "../index";
+import Logger from '../config/winston';
 
 
 const awsDynamoDB = new AWSDynamoDBRepository();
@@ -12,46 +14,47 @@ function json<T>(statusCode: number, body: T) {
     return {statusCode, body: JSON.stringify(body)};
 }
 
-const postBodySchema = Joi.object({
+/** HTTP: POST /appointments */
+const postEventBodySchema = Joi.object({
     insuredId: Joi.string().length(5).required(),
     scheduleId: Joi.number().required(),
     countryISO: Joi.string().length(2).required(),
-})
+});
+const handlePost = async (event: APIGatewayProxyEventV2) => {
+    const appointmentRequest: AppointmentRequest = JSON.parse(event.body || '{}') as AppointmentRequest;
+    Logger.debug(`Received request body: ${JSON.stringify(event.body)}`)
 
-/** HTTP: POST /appointments */
-async function handlePost(event: APIGatewayProxyEventV2) {
-    let body;
+    let created: AppointmentRecord;
     try {
-        body = JSON.parse(event.body ?? '');
-    } catch (e: any) {
-        return json(400, {message: 'Invalid JSON body'});
-    }
-    const validated = postBodySchema.validate(body);
-    if (validated.error) {
-        return json(400, {message: 'One or more fields are invalid'});
+        created = await awsDynamoDB.saveAppointment(appointmentRequest);
+    } catch (e: unknown) {
+        return json(500, {message: 'Failed to save appointment'});
     }
 
-    const created: AppointmentRecord | undefined = await awsDynamoDB.saveAppointment(validated.value);
-    if (!created) {
-        return json(500, {message: 'Appointment not saved. Internal server error.'});
-    }
     await awsSNS.publishAppointment({
         insuredId: created.insuredId,
         scheduleId: created.scheduleId,
         countryISO: created.countryISO as CountryISO,
     });
-    return json(202, {id: created.id, status: created.status, request: validated.value});
+    return json(202, {id: created.id, status: created.status, request: appointmentRequest});
 }
 
 /** HTTP: GET /appointments/{insuredId} */
-async function handleGet(event: APIGatewayProxyEventV2) {
-    const insuredId = event.pathParameters?.insuredId;
-    if (!insuredId || !/^\d{5}$/.test(insuredId)) {
-        return json(400, {message: 'insuredId path parameter must be exactly five digits'});
-    }
+const getPathParametersSchema = Joi.object({
+    pathParameters: Joi.object({
+        insuredId: Joi.string().length(5).required(),
+    })
+});
+const handleGet = async (event: APIGatewayProxyEventV2) => {
+    const insuredId = event.pathParameters!!.insuredId!!;
+    Logger.debug(`Received request for insuredId: [${insuredId}]`);
 
-    const items = await awsDynamoDB.getByInsuredId(insuredId);
-    return json(200, {items});
+    try {
+        const items = await awsDynamoDB.getByInsuredId(insuredId);
+        return json(200, {items});
+    } catch (e: unknown) {
+        return json(500, {message: 'Failed to get appointments for insuredId'});
+    }
 }
 
 /** SQS: listens to SQS triggered by EventBridge */
@@ -61,10 +64,14 @@ const handleStatusSqs = async (event: SQSEvent): Promise<SQSBatchResponse> => {
         try {
             const body = JSON.parse(record.body) as { detail?: AppointmentProcessedEventMessage };
             const detail = body.detail;
-            if (!detail) throw new Error('EventBridge Detail field is missing');
+            if (!detail) {
+                Logger.error(`Invalid message received: ${JSON.stringify(body)}`);
+                failures.push({itemIdentifier: record.messageId});
+                continue;
+            }
             await awsDynamoDB.updateAppointmentToCompleted(detail.insuredId, detail.scheduleId, detail.countryISO);
         } catch (err) {
-            console.error('Failed to process status message', err);
+            Logger.error('Failed to process status message', err);
             failures.push({itemIdentifier: record.messageId});
         }
     }
@@ -75,14 +82,34 @@ const handleStatusSqs = async (event: SQSEvent): Promise<SQSBatchResponse> => {
  * Main entry point for the Appointment Lambda function.
  */
 export const handler = async (event: APIGatewayProxyEventV2 | SQSEvent) => {
-    const isHttpRequest = event as APIGatewayProxyEventV2;
-    if (isHttpRequest?.requestContext?.http?.method) {
-        const method = isHttpRequest.requestContext.http?.method;
-        const rawPath = isHttpRequest.rawPath;
-        if (method === 'POST' && rawPath.startsWith('/appointments')) return handlePost(isHttpRequest);
-        if (method === 'GET' && rawPath.startsWith('/appointments/')) return handleGet(isHttpRequest);
+    const incomingHttpRequest = event as APIGatewayProxyEventV2;
+
+    if (incomingHttpRequest?.requestContext?.http?.method) {
+
+        const method = incomingHttpRequest.requestContext.http?.method;
+        const rawPath = incomingHttpRequest.rawPath;
+
+        if (method === 'POST' && rawPath.startsWith('/appointments')) {
+            try {
+                const {error} = postEventBodySchema.validate(JSON.parse(incomingHttpRequest.body || '{}'), {
+                    abortEarly: false,
+                    stripUnknown: true,
+                });
+                if (error) return json(400, {message: 'Invalid request body. ' + error.message});
+                return handlePost(incomingHttpRequest);
+            } catch (e: unknown) {
+                return json(400, {message: 'Invalid request body.'});
+            }
+        }
+        if (method === 'GET' && rawPath.startsWith('/appointments/')) {
+            const {error} = getPathParametersSchema.validate(incomingHttpRequest, {
+                abortEarly: false,
+                stripUnknown: true,
+            });
+            if (error) return json(400, {message: 'Invalid "insuredId" path parameter. ' + error.message});
+            return handleGet(incomingHttpRequest);
+        }
         return json(404, {message: 'Not Found'});
     }
-
     return await handleStatusSqs(event as SQSEvent);
 };

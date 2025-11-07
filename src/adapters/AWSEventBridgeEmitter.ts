@@ -1,5 +1,6 @@
 import {EventBridgeClient, PutEventsCommand} from '@aws-sdk/client-eventbridge';
 import type {AppointmentProcessedEventMessage} from 'index';
+import Logger from '../config/winston';
 
 const awsEB = new EventBridgeClient({apiVersion: '2015-10-07'});
 
@@ -21,7 +22,8 @@ export class AWSEventBridgeEmitter {
                 },
             ],
         });
-
-        await this.client.send(putEventsCommand)
+        Logger.debug(`Emitting processed event: ${JSON.stringify(message)}`);
+        await this.client.send(putEventsCommand);
+        Logger.info("AppointmentProcessed event emitted successfully.")
     }
 }

@@ -4,11 +4,13 @@ import type {CountryISO} from "index";
 interface GlobalEnv {
     APPOINTMENTS_TABLE: string;
     TOPIC_ARN: string;
+    LOG_LEVEL: string;
 }
 
 const globalEnvSchema = Joi.object<GlobalEnv>({
     APPOINTMENTS_TABLE: Joi.string().required(),
     TOPIC_ARN: Joi.string().required(),
+    LOG_LEVEL: Joi.string().default('info'),
 });
 
 export type CountryEnv = {
@@ -38,17 +40,23 @@ const readCountryEnv = (prefix: string) => {
     }
 }
 
-const envValidated = globalEnvSchema.validate(process.env, {abortEarly: false, stripUnknown: true, convert: true});
-if (envValidated.error) throw new Error('Missing required environment variables. ' + envValidated.error.message);
-export const globalEnv = envValidated.value;
+export const getGlobalEnv = (env: keyof GlobalEnv) => {
+    const {value, error} = globalEnvSchema.validate(process.env, {
+        abortEarly: false,
+        stripUnknown: true,
+        convert: true
+    });
+    if (error) throw new Error('Missing required environment variables. ' + error.message);
+    return value[env];
+};
 
 export const countryEnv = (countryISO: CountryISO) => {
-    const countryEnvValidated =
+    const {value, error} =
         countryEnvSchema.validate(readCountryEnv(`${countryISO.toString().toUpperCase()}_`), {
             abortEarly: false,
             stripUnknown: true,
             convert: true
         });
-    if (countryEnvValidated.error) throw new Error('Missing required country environment variables. ' + countryEnvValidated.error.message);
-    return countryEnvValidated.value;
+    if (error) throw new Error('Missing required country environment variables. ' + error.message);
+    return value;
 }

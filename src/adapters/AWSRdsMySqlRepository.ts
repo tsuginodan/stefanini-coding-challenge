@@ -1,5 +1,6 @@
 import type {AppointmentRequest, CountryISO} from 'index';
 import {countryEnv} from "../config/env";
+import Logger from "../config/winston";
 // import {Pool} from "mysql2/promise"; // commented out. Using a mock Pool instead
 
 export class AWSRdsMySqlRepository {
@@ -20,7 +21,9 @@ export class AWSRdsMySqlRepository {
         const sql = `INSERT INTO appointments (insuredId, scheduleId, countryISO, createdAt)
                      VALUES (?, ?, ?, ?)`;
         const params = [payload.insuredId, payload.scheduleId, payload.countryISO, new Date()];
+        Logger.debug(`Storing appointment: ${JSON.stringify(params)}`);
         await pool.execute(sql, params);
+        Logger.info("Appointment stored successfully.")
     }
 
     /** Retrieve all appointments for a country (ordered by createdAt desc). */
