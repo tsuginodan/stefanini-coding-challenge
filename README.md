@@ -14,3 +14,5 @@ Includes the URL to hit for.
   - [ ] how to use `middy` for main lambda handlers (the one that routes two http endpoints and one sqs handler)?
   - `serverless-offline` takes env vars as '[object Object]', there is a solution tho, but it's out of scope for now
 - [x] Replace console logging for `winston` logger
+- [ ] Add more tests and code coverage
+- [ ] Work on code refactors opportunities
